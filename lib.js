@@ -130,6 +130,7 @@ async function parseBlock(
             _id: blockHash.toHuman(),
             height: blockNumber,
             timestamp: null,
+            specVersion: apiAt.runtimeVersion.specVersion.toNumber(),
             author: await getBlockAuthor(apiAt, blockNumber),
         };
 
