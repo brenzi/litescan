@@ -11,10 +11,15 @@ import { MongoClient } from "mongodb";
 import * as dotenv from "dotenv";
 dotenv.config();
 
-const dbClient = new MongoClient(process.env.DB_URL, {
-    ssl: true,
-    sslValidate: true,
-});
+const config =
+    process.env.DB_USE_SSL === "true"
+        ? {
+              ssl: true,
+              sslValidate: true,
+          }
+        : {};
+
+const dbClient = new MongoClient(process.env.DB_URL, config);
 export const db = dbClient.db(process.env.DB_NAME);
 
 export const RPC_NODE = process.env.RPC_NODE;
@@ -125,6 +130,7 @@ async function parseBlock(
             _id: blockHash.toHuman(),
             height: blockNumber,
             timestamp: null,
+            author: await getBlockAuthor(apiAt, blockNumber),
         };
 
         let [cindex, phase, nextPhaseTimestamp, reputationLifetime] =
@@ -331,6 +337,21 @@ async function getLastestFinalizedBlockNumber(api) {
     );
 }
 
+async function getLastAuthoredBlocks(api) {
+    const lastAuthoredBlocks = await api.query.collatorSelection.lastAuthoredBlock.entries();
+    return lastAuthoredBlocks.map(([key, value]) => {
+        const collator = key.toHuman();
+        const blockNumber = value.toNumber();
+        return [collator, blockNumber];
+    });
+}
+
+async function getBlockAuthor(api, blockNumber) {
+    const lastAuthoredBlocks = await getLastAuthoredBlocks(api);
+    const authorEntry = lastAuthoredBlocks.find(([_, authoredBlockNumber]) => authoredBlockNumber === blockNumber);
+    return authorEntry ? authorEntry[0][0] : null;
+}
+
 // init timestamp 1716415200000
 export async function main() {
     const wsProvider = new WsProvider(RPC_NODE);
@@ -357,6 +378,7 @@ export async function main() {
         );
         lastProcessedBlockNumber = await getLastProcessedBlockNumber(api);
         currentBlockNumber = await getLastestFinalizedBlockNumber(api);
+        break;
     }
 
     console.log("Switching to live mode");
