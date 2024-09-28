@@ -20,7 +20,7 @@ services:
       NUM_CONCURRENT_JOBS: 100
       DB_NAME: indexer
       RPC_NODE: "wss://kusama.api.encointer.org"
-      START_BLOCK: 508439
+      START_BLOCK: 6353778 # 508439
 
 
   mongo-express:

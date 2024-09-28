@@ -16,3 +16,15 @@ RPC_NODE=<rpc node url>
 
 `node index.js` 
 
+## docker 
+
+```bash
+docker-compose up -d
+docker logs  litescan-indexer-1
+
+# cleanup
+docker-compose down
+# destroy the image to rebuild if there are changes to the code
+docker rmi litescan-indexer
+```
+

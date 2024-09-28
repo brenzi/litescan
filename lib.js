@@ -147,6 +147,21 @@ async function parseBlock(
         block.nextPhaseTimestamp = parseInt(nextPhaseTimestamp.toString());
         block.reputationLifetime = parseInt(reputationLifetime.toString());
 
+        const systemEvents = allRecords
+          .filter(
+            ({ phase }) =>
+              phase.isFinalization || phase.isInitialization
+          )
+          .map((e) => e.toHuman());
+        systemEvents.forEach(async (e, eventIndex) => {
+            e.event.blockNumber = blockNumber;
+            e.event.blockHash = blockHash.toHuman();
+            e.event._id = `${blockNumber}-${eventIndex}`;
+            e.event.extrinsicId = null;
+            e.event.timestamp = block.timestamp;
+            delete e.event.index;
+            await insertIntoCollection("events", e.event);
+        })
         // the information for each of the contained extrinsics
         signedBlock.block.extrinsics.forEach(async (ex, extrinsicIndex) => {
             // the extrinsics are decoded by the API, human-like view
