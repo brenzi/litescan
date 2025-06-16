@@ -11,6 +11,7 @@ import { MongoClient } from "mongodb";
 import * as dotenv from "dotenv";
 dotenv.config();
 
+export const DEBUG = process.env.DEBUG === "true";
 const config =
     process.env.DB_USE_SSL === "true"
         ? {
@@ -19,8 +20,12 @@ const config =
           }
         : {};
 
-const dbClient = new MongoClient(process.env.DB_URL, config);
-export const db = dbClient.db(process.env.DB_NAME);
+let dbClient, db;
+if(!DEBUG) {
+    dbClient = new MongoClient(process.env.DB_URL, config)
+    db = dbClient.db(process.env.DB_NAME)
+
+}
 
 export const RPC_NODE = process.env.RPC_NODE;
 
@@ -38,6 +43,14 @@ export async function getLastProcessedBlockNumber() {
 }
 
 async function insertIntoCollection(collection, document) {
+    if (DEBUG) {
+        console.log(
+            `Inserting document into collection ${collection}: ${JSON.stringify(
+                document
+            )}`
+        );
+        return;
+    }
     try {
         await db.collection(collection).insertOne(document);
     } catch (e) {
@@ -95,7 +108,6 @@ async function parseBlock(
     try {
         if (!api) {
             const wsProvider = new WsProvider(RPC_NODE);
-            // Create our API with a default connection to the local node
             api = await ApiPromise.create({
                 provider: wsProvider,
                 signedExtensions: typesBundle.signedExtensions,
@@ -103,7 +115,6 @@ async function parseBlock(
             });
         }
 
-        // returns Hash
         let signedBlock;
         let blockHash;
         try {
@@ -204,13 +215,11 @@ async function parseBlock(
                     extrinsic.success = true;
                     return;
                 }
-                //db.collection(`ev.${e.event.section}.${e.event.method}`).insertOne(e.event)
                 await insertIntoCollection("events", e.event);
             });
 
             extrinsic = { ...extrinsic, ...extrinsic.method };
 
-            //db.collection(`xt.${extrinsic.section}.${extrinsic.method}`).insertOne(extrinsic)
             await insertIntoCollection("extrinsics", extrinsic);
         });
         const systemEvents = allRecords
@@ -231,8 +240,6 @@ async function parseBlock(
 
         await insertIntoCollection("blocks", block);
     } catch (e) {
-        // console.log(`ERROR processing block ${blockNumber}`);
-        // console.log(e);
         throw e;
     }
 }
@@ -270,6 +277,7 @@ async function catchUpWithChain(api, blockNumber, endBlockNumber) {
 }
 
 export async function findUnprocessedBlockNumbers(blockNumber, endBlockNumber) {
+    if(DEBUG) return [];
     const blocks = db.collection("blocks");
     let processedBlockNumbers = await (
         await blocks
@@ -356,25 +364,26 @@ async function getLastestFinalizedBlockNumber(api) {
 
 async function getLastAuthoredBlocks(api) {
     try {
-        const lastAuthoredBlocks = await api.query.collatorSelection.lastAuthoredBlock.entries();
+        const lastAuthoredBlocks =
+            await api.query.collatorSelection.lastAuthoredBlock.entries();
         return lastAuthoredBlocks.map(([key, value]) => {
             const collator = key.toHuman();
             const blockNumber = value.toNumber();
             return [collator, blockNumber];
         });
-    }
-    catch (e) {
-        return []
+    } catch (e) {
+        return [];
     }
 }
 
 async function getBlockAuthor(api, blockNumber) {
     const lastAuthoredBlocks = await getLastAuthoredBlocks(api);
-    const authorEntry = lastAuthoredBlocks.find(([_, authoredBlockNumber]) => authoredBlockNumber === blockNumber);
+    const authorEntry = lastAuthoredBlocks.find(
+        ([_, authoredBlockNumber]) => authoredBlockNumber === blockNumber
+    );
     return authorEntry ? authorEntry[0][0] : null;
 }
 
-// init timestamp 1716415200000
 export async function main() {
     const wsProvider = new WsProvider(RPC_NODE);
     const api = await ApiPromise.create({
