@@ -45,21 +45,77 @@ async function insertIntoCollection(collection, document) {
     if (DEBUG) {
         console.log(
             `Inserting document into collection ${collection}: ${JSON.stringify(
-                document,
-            )}`,
+                document
+            )}`
         );
         return;
     }
     try {
-        await db.collection(collection).insertOne(document);
+        try {
+            await db.collection(collection).insertOne(document);
+        } catch (e) {
+            if (
+                e.name === "MongoServerError" &&
+                e.message.includes(
+                    "BSONObj exceeds maximum nested object depth"
+                )
+            ) {
+                // Recursively stringify fields that exceed a safe depth
+                function stringifyDeepFields(
+                    obj,
+                    maxDepth = 50,
+                    currentDepth = 0
+                ) {
+                    if (
+                        currentDepth > maxDepth &&
+                        typeof obj === "object" &&
+                        obj !== null
+                    ) {
+                        return JSON.stringify(obj);
+                    }
+                    if (Array.isArray(obj)) {
+                        return obj.map((item) =>
+                            stringifyDeepFields(
+                                item,
+                                maxDepth,
+                                currentDepth + 1
+                            )
+                        );
+                    }
+                    if (typeof obj === "object" && obj !== null) {
+                        return Object.fromEntries(
+                            Object.entries(obj).map(([k, v]) => [
+                                k,
+                                stringifyDeepFields(
+                                    v,
+                                    maxDepth,
+                                    currentDepth + 1
+                                ),
+                            ])
+                        );
+                    }
+                    return obj;
+                }
+                const safeDoc = stringifyDeepFields(document, 50, 0);
+                try {
+                    await db.collection(collection).insertOne(safeDoc);
+                    console.log(
+                        `Retried insert with stringified deep fields for document ${document._id} in collection ${collection}`
+                    );
+                    return;
+                } catch (err) {
+                    throw err;
+                }
+            }
+            throw e;
+        }
     } catch (e) {
         if (e.message.includes("E11000 duplicate key error")) {
             console.log(
-                `Skippping dup key ${document._id} in collection ${collection}`,
+                `Skippping dup key ${document._id} in collection ${collection}`
             );
             return;
         }
-        throw e;
     }
 }
 const cidToString = (input) => {
@@ -174,6 +230,7 @@ async function parseBlock(
 
         const extrinsicPromises = signedBlock.block.extrinsics.map(
             async (ex, extrinsicIndex) => {
+                let skipInsertExtrinsic = false;
                 let extrinsic = ex.toHuman();
                 extrinsic.success = false;
                 extrinsic.blockNumber = blockNumber;
@@ -182,19 +239,19 @@ async function parseBlock(
 
                 Object.keys(extrinsic.method.args).forEach(function (key) {
                     extrinsic.method.args[key] = mapTypes(
-                        extrinsic.method.args[key],
+                        extrinsic.method.args[key]
                     );
                 });
                 if (["setValidationData"].includes(extrinsic.method.method))
-                    return;
+                    skipInsertExtrinsic = true;
                 if (
                     extrinsic.method.section === "timestamp" &&
                     extrinsic.method.method === "set"
                 ) {
                     block.timestamp = parseInt(
-                        extrinsic.method.args.now.replaceAll(",", ""),
+                        extrinsic.method.args.now.replaceAll(",", "")
                     );
-                    return;
+                    skipInsertExtrinsic = true;
                 }
 
                 extrinsic.timestamp = block.timestamp;
@@ -235,14 +292,15 @@ async function parseBlock(
                 );
 
                 extrinsic = { ...extrinsic, ...extrinsic.method };
-                await insertIntoCollection("extrinsics", extrinsic);
-            },
+                if (!skipInsertExtrinsic) {
+                    await insertIntoCollection("extrinsics", extrinsic);
+                }
+            }
         );
         await Promise.all(extrinsicPromises);
-
         const systemEvents = allRecords
             .filter(
-                ({ phase }) => phase.isFinalization || phase.isInitialization,
+                ({ phase }) => phase.isFinalization || phase.isInitialization
             )
             .map((e) => e.toHuman());
 
@@ -256,9 +314,8 @@ async function parseBlock(
                 e.event.timestamp = block.timestamp;
                 delete e.event.index;
                 await insertIntoCollection("events", e.event);
-            }),
+            })
         );
-
         await insertIntoCollection("blocks", block);
     } catch (e) {
         throw e;
@@ -423,12 +480,13 @@ async function catchUpAndIndexLive(api) {
                 continue;
             }
         }
+        console.log(`Processed block ${currentBlockNumber}`);
 
         if (currentBlockNumber - lastCheckAtHeight >= 10) {
             await parseUnprocessedBlocks(
                 api,
                 lastCheckAtHeight,
-                currentBlockNumber,
+                currentBlockNumber
             );
             lastCheckAtHeight = currentBlockNumber;
         }
