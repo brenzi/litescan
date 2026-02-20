@@ -17,6 +17,7 @@
     "@encointer/types": "^0.14.0",
     "@encointer/util": "^0.14.0",
     "@encointer/worker-api": "^0.14.0",
-    "bs58": "^5.0.0"
+    "bs58": "^5.0.0",
+    "p-limit": "^7.3.0"
   }
 }
