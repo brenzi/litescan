@@ -596,6 +596,10 @@ async function getBlockAuthor(api, blockNumber) {
     return findAuthorFromCache(lastAuthoredBlocks, blockNumber);
 }
 
+async function ensureIndexes() {
+    await db.collection("blocks").createIndex({ height: 1 }, { unique: true });
+}
+
 export async function main() {
     const metricsPort = parseInt(process.env.METRICS_PORT || 9615);
     startMetricsServer(metricsPort);
@@ -603,6 +607,8 @@ export async function main() {
     console.log(
         `Config: NUM_CONCURRENT_JOBS=${NUM_CONCURRENT_JOBS}, MAX_RPC_CONCURRENCY=${MAX_RPC_CONCURRENCY}, BATCH_DELAY_MS=${BATCH_DELAY_MS}, WS_RECONNECT_MS=${WS_RECONNECT_MS}`
     );
+
+    if (!DEBUG) await ensureIndexes();
 
     const wsProvider = new WsProvider(RPC_NODE, WS_RECONNECT_MS);
     const api = await ApiPromise.create({
