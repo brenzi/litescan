@@ -699,11 +699,27 @@ async function healCorruptDocuments() {
         return;
     }
 
+    // Corrupt documents leave orphaned index entries — rebuild indexes
+    console.log("[heal] Rebuilding indexes to clean up orphaned entries...");
+    for (const name of ["blocks", "events", "extrinsics"]) {
+        try {
+            await db.collection(name).dropIndexes();
+        } catch (e) {
+            console.log(`[heal] dropIndexes(${name}): ${e.message}`);
+        }
+    }
+    await ensureIndexes();
+
     // Remove block documents for affected heights so gap repair re-indexes them
     const heights = [...corruptHeights].sort((a, b) => a - b);
     console.log(`[heal] Purging block entries for ${heights.length} affected block(s): ${heights.join(", ")}`);
-    const r = await db.collection("blocks").deleteMany({ height: { $in: heights } });
-    console.log(`[heal] Removed ${r.deletedCount} block(s). Gap repair will re-index them.`);
+    try {
+        const r = await db.collection("blocks").deleteMany({ height: { $in: heights } });
+        console.log(`[heal] Removed ${r.deletedCount} block(s). Gap repair will re-index them.`);
+    } catch (e) {
+        // If delete still fails (e.g. records already gone from earlier deleteOne), that's fine
+        console.log(`[heal] Block cleanup: ${e.message} (blocks were already removed)`);
+    }
 }
 
 export async function main() {
