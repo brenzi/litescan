@@ -668,6 +668,107 @@ async function ensureIndexes() {
     await db.collection("blocks").createIndex({ height: 1 }, { unique: true });
 }
 
+// ---------------------------------------------------------------------------
+// Self-healing: detect corrupt BSON documents, delete them, let gap repair
+// re-index the affected blocks.
+// ---------------------------------------------------------------------------
+
+function isBsonCorruptionError(e) {
+    return e?.code === 10320 || /BSONElement|bad type/i.test(e?.message || "");
+}
+
+async function binarySearchCorrupt(collection, keyField, keys) {
+    if (keys.length === 0) return [];
+    try {
+        await collection.find({ [keyField]: { $in: keys } }).forEach(() => {});
+        return [];
+    } catch (e) {
+        if (!isBsonCorruptionError(e)) throw e;
+        if (keys.length === 1) return keys;
+        const mid = Math.floor(keys.length / 2);
+        const left = await binarySearchCorrupt(collection, keyField, keys.slice(0, mid));
+        const right = await binarySearchCorrupt(collection, keyField, keys.slice(mid));
+        return [...left, ...right];
+    }
+}
+
+async function healCorruptDocuments() {
+    if (DEBUG) return;
+    console.log("[heal] Checking collection integrity...");
+
+    const corruptHeights = new Set();
+
+    for (const [name, keyField, isBlocks] of [
+        ["blocks", "height", true],
+        ["events", "_id", false],
+        ["extrinsics", "_id", false],
+    ]) {
+        // validate gates the expensive cursor scan — skip clean collections
+        let needsScan = false;
+        try {
+            const v = await db.command({ validate: name });
+            needsScan = !v.valid || v.nInvalidDocuments > 0;
+        } catch {
+            needsScan = true;
+        }
+
+        if (!needsScan) {
+            console.log(`[heal] ${name}: valid`);
+            continue;
+        }
+
+        console.log(`[heal] ${name}: invalid — locating corrupt documents...`);
+        const coll = db.collection(name);
+        // covered-query projection: reads from index only, safe on corrupt docs
+        const proj = isBlocks ? { height: 1, _id: 0 } : { _id: 1 };
+
+        let resumeAfter = null;
+        while (true) {
+            const filter = resumeAfter != null ? { [keyField]: { $gt: resumeAfter } } : {};
+            const cursor = coll.find(filter).sort({ [keyField]: 1 }).batchSize(1000);
+            let lastGood = resumeAfter;
+
+            try {
+                for await (const doc of cursor) {
+                    lastGood = isBlocks ? doc.height : doc._id;
+                }
+                break; // reached end without error
+            } catch (e) {
+                if (!isBsonCorruptionError(e)) throw e;
+
+                // Get candidate keys via covered query (index-only, safe)
+                const cFilter = lastGood != null ? { [keyField]: { $gt: lastGood } } : {};
+                const candidates = await coll
+                    .find(cFilter).sort({ [keyField]: 1 }).project(proj).limit(2000)
+                    .map((d) => (isBlocks ? d.height : d._id))
+                    .toArray();
+
+                if (candidates.length === 0) break;
+
+                for (const key of await binarySearchCorrupt(coll, keyField, candidates)) {
+                    const h = isBlocks ? key : parseInt(String(key).split("-")[0], 10);
+                    if (!isNaN(h)) corruptHeights.add(h);
+                    await coll.deleteOne({ [keyField]: key });
+                    console.log(`[heal] Deleted corrupt ${name}/${key} (block ${h})`);
+                }
+
+                resumeAfter = candidates[candidates.length - 1];
+            }
+        }
+    }
+
+    if (corruptHeights.size === 0) {
+        console.log("[heal] All collections healthy.");
+        return;
+    }
+
+    // Remove block documents for affected heights so gap repair re-indexes them
+    const heights = [...corruptHeights].sort((a, b) => a - b);
+    console.log(`[heal] Purging block entries for ${heights.length} affected block(s): ${heights.join(", ")}`);
+    const r = await db.collection("blocks").deleteMany({ height: { $in: heights } });
+    console.log(`[heal] Removed ${r.deletedCount} block(s). Gap repair will re-index them.`);
+}
+
 export async function main() {
     const metricsPort = parseInt(process.env.METRICS_PORT || 9615);
     startMetricsServer(metricsPort);
@@ -677,6 +778,7 @@ export async function main() {
     );
 
     if (!DEBUG) await ensureIndexes();
+    await healCorruptDocuments();
 
     const wsProvider = new WsProvider(RPC_NODE, WS_RECONNECT_MS);
     const api = await ApiPromise.create({
