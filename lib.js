@@ -674,7 +674,12 @@ async function ensureIndexes() {
 // ---------------------------------------------------------------------------
 
 function isBsonCorruptionError(e) {
-    return e?.code === 10320 || /BSONElement|bad type/i.test(e?.message || "");
+    if (e?.code === 10320) return true;
+    const msg = e?.message || "";
+    const name = e?.name || "";
+    // Server-side: "BSONElement: bad type", "Location10320"
+    // Client-side (bson lib): "bad string length", "bad embedded document length", etc.
+    return name === "BSONError" || /BSONElement|bad type|bad string length|bad.*length in bson/i.test(msg);
 }
 
 async function binarySearchCorrupt(collection, keyField, keys) {
